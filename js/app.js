@@ -21,8 +21,9 @@
 
   // ---------- state ----------
   function blankEarning() {
-    return { label: '', labelAuto: true, amount: '', open: false, builder: { rank: 'firefighter', scale: 'fy26', base: '', ot: '', incentives: [], holiday: true, other: '' } };
+    return { label: '', labelAuto: true, amount: '', open: false, builder: { stub: blankStub() } };
   }
+  function blankStub() { return { rate: '', otHours: '', gross: '', lines: {} }; }
   function defaultState() {
     return {
       hireDate: '', targetDate: '', useManual: false, manualYears: '',
@@ -42,7 +43,10 @@
       out.settings = Object.assign({}, C.DEFAULTS, s.settings || {});
       out.earnings = (Array.isArray(s.earnings) ? s.earnings : []).slice(0, 5).map(e => {
         const b = blankEarning();
-        return Object.assign(b, e, { builder: Object.assign(b.builder, e && e.builder ? e.builder : {}) });
+        const merged = Object.assign(b, e, { builder: Object.assign(b.builder, e && e.builder ? e.builder : {}) });
+        merged.builder.stub = Object.assign(blankStub(), merged.builder.stub || {});
+        if (!merged.builder.stub.lines || typeof merged.builder.stub.lines !== 'object') merged.builder.stub.lines = {};
+        return merged;
       });
       while (out.earnings.length < 5) out.earnings.push(blankEarning());
       out.scenarios = (Array.isArray(s.scenarios) ? s.scenarios : []).slice(0, 3);
@@ -138,7 +142,7 @@
           '<span class="erow-idx">' + (i + 1) + '</span>' +
           '<input class="label-in" type="text" aria-label="Year" placeholder="Year ' + (i + 1) + '">' +
           '<div class="money"><span class="cur">$</span><input class="amount-in" type="text" inputmode="decimal" placeholder="' + (i === 0 ? 'Most recent year' : '0') + '" aria-label="Annual pay ' + (i + 1) + '"></div>' +
-          '<button class="chip build-toggle" type="button">Build</button>' +
+          '<button class="chip build-toggle" type="button">Pay stub</button>' +
         '</div>' +
         '<div class="builder" hidden></div>';
       wrap.appendChild(row);
@@ -165,72 +169,84 @@
   }
 
   function renderBuilder(i) {
-    const e = state.earnings[i];
-    const b = e.builder;
     const host = $('#erow-' + i + ' .builder');
-    const rankOpts = C.RANKS.map(r => '<option value="' + r.id + '"' + (b.rank === r.id ? ' selected' : '') + '>' + r.label + '</option>').join('');
-    const scaleOpts = C.PAY_SCALES.map(s => '<option value="' + s.id + '"' + (b.scale === s.id ? ' selected' : '') + '>' + s.label + '</option>').join('');
-    const incs = C.INCENTIVES.map(inc =>
-      '<label class="check"><input type="checkbox" data-inc="' + inc.id + '"' + (b.incentives.includes(inc.id) ? ' checked' : '') + '>' +
-      '<span class="box"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg></span>' +
-      '<span class="lbl">' + inc.label + '</span><span class="amt">' + money0(inc.amount) + '</span></label>').join('');
+    host.innerHTML = '<div class="builder-panel"></div>';
+    renderStubForm(i);
+  }
+
+  // ----- from pay stub -----
+  function renderStubForm(i) {
+    const e = state.earnings[i];
+    const st = e.builder.stub;
+    const host = $('#erow-' + i + ' .builder .builder-panel');
+    const groups = [
+      { id: 'pay', title: 'Regular pay and paid leave' },
+      { id: 'ot', title: 'Overtime' },
+      { id: 'inc', title: 'Incentives' },
+      { id: 'other', title: 'Other pay' },
+    ];
+    const rowHtml = c =>
+      '<label class="stub-row"><span class="stub-code"><span class="code">' + c.code + '</span><span class="stub-label">' + c.label + '</span></span>' +
+      '<span class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-line="' + c.id + '" placeholder="0" aria-label="' + c.label + ' year to date"></span></label>';
     host.innerHTML =
+      '<p class="hint" style="margin-top:0">Grab the <strong>last pay stub of the year</strong> and copy the <strong>YTD</strong> column from the EARNINGS block. Leave anything you don\'t have at 0.</p>' +
       '<div class="grid-2">' +
-        '<label class="field"><span>Rank</span><select data-b="rank">' + rankOpts + '</select></label>' +
-        '<label class="field"><span>Contract year (for the pay scale hint)</span><select data-b="scale">' + scaleOpts + '</select></label>' +
+        '<label class="field"><span>Hourly rate (RATE on the REGULAR line)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="rate" placeholder="0.00"></div></label>' +
+        '<label class="field"><span>Overtime hours this year</span><input type="text" inputmode="decimal" data-s="otHours" placeholder="Blank = estimate from OT pay"></label>' +
       '</div>' +
-      '<label class="field"><span>Base annual pay</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-b="base" placeholder="0"></div></label>' +
-      '<p class="scale-hint" data-scale-hint></p>' +
-      '<div class="grid-2">' +
-        '<label class="field"><span>Overtime hours for the year</span><input type="text" inputmode="decimal" data-b="ot" placeholder="0"></label>' +
-        '<label class="field"><span>Other pensionable pay (special events, out of class)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-b="other" placeholder="0"></div></label>' +
-      '</div>' +
-      '<span class="field-title" style="font-size:13px;color:var(--text-2);font-weight:600">Incentives (CBA 29.5)</span>' +
-      '<div class="inc-grid">' + incs + '</div>' +
-      '<label class="switch"><input type="checkbox" data-b="holiday"' + (b.holiday ? ' checked' : '') + '><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label">Include holiday pay (10 holidays × 8 hrs)</span></label>' +
-      '<div class="build-summary"><dl class="kv-list" data-summary></dl><div class="ot-warn" data-ot-warn hidden></div></div>' +
+      groups.map(g => '<div class="stub-group"><div class="stub-group-title">' + g.title + '</div>' + C.STUB_CODES.filter(c => c.group === g.id).map(rowHtml).join('') + '</div>').join('') +
+      '<label class="field" style="margin-top:12px"><span>Gross pay YTD (optional, from ADVICE TOTALS, to check nothing was missed)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="gross" placeholder="0"></div></label>' +
+      '<div class="ot-check" data-ot-check></div>' +
+      '<div class="build-summary"><dl class="kv-list" data-summary></dl></div>' +
       '<button class="btn btn-primary btn-block" type="button" data-use style="margin-top:12px">Use this total</button>';
 
-    $('[data-b="rank"]', host).addEventListener('change', ev => { b.rank = ev.target.value; save(); renderBuilderOut(i); });
-    $('[data-b="scale"]', host).addEventListener('change', ev => { b.scale = ev.target.value; save(); renderBuilderOut(i); });
-    bindMoney($('[data-b="base"]', host), () => b.base, v => { b.base = v; }, () => renderBuilderOut(i));
-    bindMoney($('[data-b="ot"]', host), () => b.ot, v => { b.ot = v; }, () => renderBuilderOut(i));
-    bindMoney($('[data-b="other"]', host), () => b.other, v => { b.other = v; }, () => renderBuilderOut(i));
-    $$('[data-inc]', host).forEach(cb => cb.addEventListener('change', () => {
-      const id = cb.dataset.inc;
-      b.incentives = cb.checked ? b.incentives.concat([id]) : b.incentives.filter(x => x !== id);
-      save(); renderBuilderOut(i);
-    }));
-    $('[data-b="holiday"]', host).addEventListener('change', ev => { b.holiday = ev.target.checked; save(); renderBuilderOut(i); });
+    bindMoney($('[data-s="rate"]', host), () => st.rate, v => { st.rate = v; }, () => renderStubOut(i));
+    bindMoney($('[data-s="gross"]', host), () => st.gross, v => { st.gross = v; }, () => renderStubOut(i));
+    const oh = $('[data-s="otHours"]', host);
+    oh.value = st.otHours;
+    oh.addEventListener('input', () => { st.otHours = oh.value.trim() === '' ? '' : parseMoney(oh.value); save(); renderStubOut(i); });
+    $$('[data-line]', host).forEach(inp => {
+      const id = inp.dataset.line;
+      bindMoney(inp, () => (st.lines[id] == null ? '' : st.lines[id]), v => { st.lines[id] = v; }, () => renderStubOut(i));
+    });
     $('[data-use]', host).addEventListener('click', () => {
-      const out = C.buildPay({ rank: b.rank, base: b.base, otHours: b.ot, incentives: b.incentives, holiday: b.holiday, other: b.other }, state.settings);
+      const out = C.buildFromStub(st, state.settings);
       e.amount = Math.round(out.total * 100) / 100;
       $('#erow-' + i + ' .amount-in').value = fmtIn(e.amount);
       save(); update();
       toast('Year ' + (i + 1) + ' set to ' + money0(e.amount));
     });
-    renderBuilderOut(i);
+    renderStubOut(i);
   }
 
-  function renderBuilderOut(i) {
-    const b = state.earnings[i].builder;
-    const host = $('#erow-' + i + ' .builder');
-    if (!host || host.hidden) return;
-    const out = C.buildPay({ rank: b.rank, base: b.base, otHours: b.ot, incentives: b.incentives, holiday: b.holiday, other: b.other }, state.settings);
-    const scale = C.PAY_SCALES.find(s => s.id === b.scale) || C.PAY_SCALES[1];
-    const range = scale[out.rank];
-    $('[data-scale-hint]', host).textContent = 'CBA scale ' + scale.label.split(' (')[0] + ': ' + money0(range[0]) + ' to ' + money0(range[1]) + ' · ' + out.hours.toLocaleString() + ' hrs/yr · regular rate ' + money(out.regularRate) + '/hr';
-    $('[data-summary]', host).innerHTML =
-      '<div><dt>Base pay</dt><dd>' + money(out.base) + '</dd></div>' +
-      '<div><dt>Incentives</dt><dd>' + money(out.incentiveTotal) + '</dd></div>' +
-      '<div><dt>Overtime (' + out.otHours.toLocaleString() + ' hrs × 1.5)</dt><dd>' + money(out.otPay) + '</dd></div>' +
-      '<div><dt>Holiday pay</dt><dd>' + money(out.holidayPay) + '</dd></div>' +
-      '<div><dt>Other</dt><dd>' + money(out.other) + '</dd></div>' +
-      '<div class="total"><dt>Total for the year</dt><dd>' + money(out.total) + '</dd></div>';
-    const warn = $('[data-ot-warn]', host);
-    warn.hidden = !out.otOverCap;
-    if (out.otOverCap) warn.innerHTML = '<span>⚠</span><span>Reminder: only <strong>' + out.otCapHours + ' overtime hours</strong> per year count toward your pension. Hours above that are paid but not pensionable.</span>';
+  function renderStubOut(i) {
+    const st = state.earnings[i].builder.stub;
+    const host = $('#erow-' + i + ' .builder .builder-panel');
+    if (!host) return;
+    const out = C.buildFromStub(st, state.settings);
+    $('[data-ot-check]', host).innerHTML = otCheckHtml(out.ot, out.rate);
+    let sum =
+      '<div><dt>Pay entered</dt><dd>' + money(out.subtotal) + '</dd></div>' +
+      (out.incentiveTotal ? '<div><dt>of which incentives</dt><dd>' + money(out.incentiveTotal) + '</dd></div>' : '');
+    if (out.ot.excludedPay > 0) sum += '<div><dt>Overtime over the cap (removed)</dt><dd>−' + money(out.ot.excludedPay) + '</dd></div>';
+    sum += '<div class="total"><dt>Pensionable total</dt><dd>' + money(out.total) + '</dd></div>';
+    if (out.unaccounted != null) {
+      const diff = out.unaccounted;
+      sum += '<div><dt>' + (diff >= -0.005 ? 'Not counted (' + C.STUB_EXCLUDED.join(', ').toLowerCase() + ')' : 'Entered more than gross, check your numbers') + '</dt><dd>' + money(Math.abs(diff)) + '</dd></div>';
+    }
+    $('[data-summary]', host).innerHTML = sum;
   }
+
+  function otCheckHtml(ot, rate) {
+    const cap = ot.cap;
+    if (ot.otPay <= 0 && ot.hours <= 0) return '<div class="ot-line muted">No overtime entered. The plan counts up to ' + cap + ' overtime hours a year.</div>';
+    if (ot.hours <= 0) return '<div class="ot-line warn">⚠ Enter your hourly rate or your overtime hours so the ' + cap + '-hour cap can be checked.</div>';
+    const hrs = ot.hours.toLocaleString('en-US', { maximumFractionDigits: 1 });
+    const how = ot.estimated ? 'estimated from ' + money(ot.otPay) + ' ÷ ' + money(ot.otRate) + '/hr OT rate' : 'entered';
+    if (!ot.over) return '<div class="ot-line ok">✓ <strong>' + hrs + ' OT hours</strong> (' + how + '). Under the ' + cap + '-hour cap, so all of it counts.</div>';
+    return '<div class="ot-line warn">⚠ <strong>' + hrs + ' OT hours</strong> (' + how + '). That is <strong>' + ot.overHours.toLocaleString('en-US', { maximumFractionDigits: 1 }) + ' hours over</strong> the ' + cap + '-hour cap. <strong>' + money(ot.excludedPay) + '</strong> of overtime is not pensionable and has been removed from the total.</div>';
+  }
+
 
   function renderEarnings() {
     const { years, pension } = computed;
@@ -599,7 +615,9 @@
   // Small debug surface for support and testing (read-only helpers).
   window.PensionPlanner = { buildReport: () => { compute(); return buildReport(); }, getState: () => JSON.parse(JSON.stringify(state)) };
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  // Offline support. Skipped on localhost so development reloads always fetch fresh files.
+  const isLocalDev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http') && !isLocalDev) {
     window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline support unavailable */ }); });
     // When a new version of the worker takes over, reload once so the fresh files are used.
     let refreshing = false;

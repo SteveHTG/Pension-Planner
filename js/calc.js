@@ -62,6 +62,31 @@
   const HOLIDAYS_PER_YEAR = 10;   // CBA Article 30.1
   const HOLIDAY_HOURS = 8;        // CBA Article 30.3.A
 
+  // Pay codes as they appear in the EARNINGS block of a City of Clermont pay stub.
+  // Members copy the YTD column from the last stub of the year.
+  // pensionable: counted toward salary. ot: subject to the 300-hour cap.
+  const STUB_CODES = [
+    { id: 'regular',  code: 'REGULAR',    label: 'Regular pay',                group: 'pay',  pensionable: true },
+    { id: 'vacation', code: 'VACATION',   label: 'Vacation (time used)',       group: 'pay',  pensionable: true },
+    { id: 'sick',     code: 'SICK',       label: 'Sick (time used)',           group: 'pay',  pensionable: true },
+    { id: 'holiday',  code: 'HOLIDAY',    label: 'Holiday pay',                group: 'pay',  pensionable: true },
+    { id: 'holwork',  code: 'HOL WORK',   label: 'Holiday worked',             group: 'pay',  pensionable: true },
+    { id: 'adminlv',  code: 'ADMIN LV',   label: 'Admin leave',                group: 'pay',  pensionable: true },
+    { id: 'jury',     code: 'JURY DUTY',  label: 'Jury duty',                  group: 'pay',  pensionable: true },
+    { id: 'ot',       code: 'OT REG 1.5', label: 'Overtime',                   group: 'ot',   pensionable: true, ot: true },
+    { id: 'woc',      code: 'W.O.C',      label: 'Working out of class',       group: 'other', pensionable: true },
+    { id: 'special',  code: 'SPECIAL EV', label: 'Special events',             group: 'other', pensionable: true },
+    { id: 'retro',    code: 'RETRO PAY',  label: 'Retro pay',                  group: 'other', pensionable: true },
+    { id: 'paramedic', code: 'PARAMEDIC', label: 'Paramedic incentive',        group: 'inc',  pensionable: true },
+    { id: 'trttech',  code: 'TRT TECH',   label: 'Tech Rescue Technician',     group: 'inc',  pensionable: true },
+    { id: 'trtteam',  code: 'TRT TEAM',   label: 'Tech Rescue Team',           group: 'inc',  pensionable: true },
+    { id: 'surface',  code: 'SURFACE WA', label: 'Surface Water Rescue',       group: 'inc',  pensionable: true },
+    { id: 'otherinc', code: 'FTO / other', label: 'Other incentive',           group: 'inc',  pensionable: true },
+    { id: 'otherpay', code: 'OTHER',      label: 'Other pensionable pay',      group: 'other', pensionable: true },
+  ];
+  // Codes that appear on stubs but are NOT pensionable salary (shown for reconciliation only).
+  const STUB_EXCLUDED = ['LUMP SUM', 'LIFE BENEF', 'MOTIVATE', 'UNIFORMS'];
+
   // ---------- helpers ----------
 
   function num(v) {
@@ -234,7 +259,55 @@
     return { annual, monthly: annual / 12, perPaycheck: annual / 26 };
   }
 
-  // ---------- pay builder (CBA) ----------
+  // ---------- overtime cap check ----------
+
+  // Checks overtime against the pensionable cap (300 hours per year).
+  // input: { otPay, otHours, hourlyRate }
+  //   otHours may be blank; then hours are estimated as otPay / (hourlyRate * 1.5).
+  function otCapCheck(input, s) {
+    s = Object.assign({}, DEFAULTS, s || {});
+    const cap = Math.max(0, num(s.otCapHours));
+    const otPay = Math.max(0, num(input.otPay));
+    const rate = Math.max(0, num(input.hourlyRate));
+    const otRate = rate * 1.5;
+    const given = input.otHours !== '' && input.otHours != null && num(input.otHours) > 0;
+    let hours = given ? num(input.otHours) : (otRate > 0 ? otPay / otRate : 0);
+    const estimated = !given;
+    const overHours = Math.max(0, hours - cap);
+    // Pay attributable to hours over the cap. Uses the average OT dollars per hour actually paid.
+    const perHour = hours > 0 ? otPay / hours : otRate;
+    const excludedPay = Math.min(otPay, overHours * perHour);
+    return {
+      otPay, hours, estimated, otRate, cap, overHours, excludedPay,
+      allowedPay: otPay - excludedPay, over: overHours > 0, canCheck: hours > 0 || otPay === 0,
+    };
+  }
+
+  // ---------- pay from a pay stub (YTD column) ----------
+
+  // input: { rate, otHours, gross, lines: { <code id>: amount } }
+  function buildFromStub(input, s) {
+    s = Object.assign({}, DEFAULTS, s || {});
+    const lines = input.lines || {};
+    const rate = Math.max(0, num(input.rate));
+    let subtotal = 0, incentiveTotal = 0, otPay = 0;
+    const items = STUB_CODES.map(c => {
+      const amount = Math.max(0, num(lines[c.id]));
+      if (c.ot) otPay += amount;
+      else if (c.group === 'inc') incentiveTotal += amount;
+      subtotal += amount;
+      return { id: c.id, code: c.code, label: c.label, group: c.group, amount };
+    });
+    const ot = otCapCheck({ otPay, otHours: input.otHours, hourlyRate: rate }, s);
+    const total = subtotal - ot.excludedPay;
+    const gross = Math.max(0, num(input.gross));
+    return {
+      rate, items, subtotal, incentiveTotal, otPay, ot, total,
+      gross, unaccounted: gross > 0 ? gross - subtotal : null,
+    };
+  }
+
+  // ---------- pay builder (CBA estimate) ----------
 
   // input: { rank, base, otHours, incentives: [ids], holiday: bool, other }
   function buildPay(input, s) {
@@ -246,19 +319,21 @@
     const ids = new Set(input.incentives || []);
     const incentiveTotal = INCENTIVES.filter(i => ids.has(i.id)).reduce((a, i) => a + i.amount, 0);
     const regularRate = hours ? (base + incentiveTotal) / hours : 0;   // CBA 29.5: incentives are in the FLSA regular rate
-    const otPay = otHours * regularRate * 1.5;
+    const otPayFull = otHours * regularRate * 1.5;
+    const ot = otCapCheck({ otPay: otPayFull, otHours, hourlyRate: regularRate }, s);
+    const otPay = ot.allowedPay;
     const holidayPay = input.holiday ? HOLIDAYS_PER_YEAR * HOLIDAY_HOURS * regularRate : 0;
     const other = Math.max(0, num(input.other));
     const total = base + incentiveTotal + otPay + holidayPay + other;
     return {
-      rank, hours, base, incentiveTotal, regularRate, otHours, otPay, holidayPay, other, total,
-      otOverCap: otHours > s.otCapHours, otCapHours: s.otCapHours,
+      rank, hours, base, incentiveTotal, regularRate, otHours, otPay, otPayFull, ot, holidayPay, other, total,
+      otOverCap: ot.over, otCapHours: s.otCapHours,
     };
   }
 
   return {
-    DEFAULTS, ANNUAL_HOURS, RANKS, PAY_SCALES, INCENTIVES, HOLIDAYS_PER_YEAR, HOLIDAY_HOURS,
+    DEFAULTS, ANNUAL_HOURS, RANKS, PAY_SCALES, INCENTIVES, HOLIDAYS_PER_YEAR, HOLIDAY_HOURS, STUB_CODES, STUB_EXCLUDED,
     num, parseDate, addMonths, monthLabel, monthsBetween, creditedService, splitYears,
-    benefitPct, explainPct, yearsToCap, afc, pension, dropSchedule, takeHomeBump, buildPay,
+    benefitPct, explainPct, yearsToCap, afc, pension, dropSchedule, takeHomeBump, buildPay, otCapCheck, buildFromStub,
   };
 });

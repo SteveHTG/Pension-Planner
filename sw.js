@@ -1,5 +1,5 @@
 /* 4350 Pension Planner service worker. Bump CACHE when shipping changes. */
-const CACHE = 'pp4350-v1';
+const CACHE = 'pp4350-v2';
 const ASSETS = [
   './',
   './index.html',

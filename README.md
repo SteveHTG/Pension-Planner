@@ -7,8 +7,9 @@ It is a static progressive web app: no server, no accounts, and nothing you type
 
 ## What it does
 
-- **Earnings** - enter your 5 highest years of pensionable pay (actual or expected). An optional pay builder
-  adds up base pay, overtime, CBA incentives, and holiday pay for you.
+- **Earnings** - enter your 5 highest years of pensionable pay (actual or expected). Type a total, or open
+  the pay stub helper and copy the YTD column from your last stub of the year. It sums the pensionable pay
+  codes, estimates overtime hours from YTD overtime pay, and removes anything over the 300-hour cap.
 - **Pension** - shows your monthly and annual pension, the percentage of your 5-year average you have earned,
   and how the number was reached.
 - **DROP** - shows the frozen monthly benefit deposited into your DROP account and a year-by-year accordion.
