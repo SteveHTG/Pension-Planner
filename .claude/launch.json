@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pension-planner",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8093", "--directory", "C:\\Users\\Horizon\\OneDrive\\Desktop\\Apps\\Pension-Planner"],
+      "port": 8093
+    }
+  ]
+}
