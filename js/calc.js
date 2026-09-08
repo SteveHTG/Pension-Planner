@@ -87,6 +87,17 @@
   // Codes that appear on stubs but are NOT pensionable salary (shown for reconciliation only).
   const STUB_EXCLUDED = ['LUMP SUM', 'LIFE BENEF', 'MOTIVATE', 'UNIFORMS'];
 
+  // Stub code text -> line id. Matched after uppercasing and collapsing spaces.
+  const STUB_ALIASES = {
+    'REGULAR': 'regular', 'VACATION': 'vacation', 'SICK': 'sick', 'HOLIDAY': 'holiday', 'HOL WORK': 'holwork',
+    'ADMIN LV': 'adminlv', 'JURY DUTY': 'jury', 'OT REG 1.5': 'ot', 'W.O.C': 'woc', 'SPECIAL EV': 'special',
+    'RETRO PAY': 'retro', 'PARAMEDIC': 'paramedic', 'TRT TECH': 'trttech', 'TRT TEAM': 'trtteam', 'SURFACE WA': 'surface',
+  };
+
+  // CBA Article 29.4 raises, expressed as "pay in this calendar year vs. the year before".
+  // The 15% took effect Oct 2024, the 4% raises Oct 2025 and Oct 2026, so they mostly land in the following calendar year.
+  const CONTRACT_RAISES = { 2025: 15, 2026: 4, 2027: 4 };
+
   // ---------- helpers ----------
 
   function num(v) {
@@ -183,11 +194,18 @@
 
   // ---------- average final compensation ----------
 
+  // Best 5 years out of those entered (the plan averages the 5 highest of the last 10).
   function afc(earnings) {
-    const vals = (earnings || []).map(num).filter(v => v > 0);
+    const vals = (earnings || []).map(num).filter(v => v > 0).sort((a, b) => b - a).slice(0, 5);
     if (!vals.length) return { annual: 0, monthly: 0, count: 0 };
     const annual = vals.reduce((a, b) => a + b, 0) / vals.length;
     return { annual, monthly: annual / 12, count: vals.length };
+  }
+
+  // Indexes of the entries that make up the best 5.
+  function topFiveIndexes(earnings) {
+    return (earnings || []).map((v, i) => ({ v: num(v), i })).filter(x => x.v > 0)
+      .sort((a, b) => b.v - a.v).slice(0, 5).map(x => x.i);
   }
 
   // ---------- pension ----------
@@ -285,7 +303,8 @@
 
   // ---------- pay from a pay stub (YTD column) ----------
 
-  // input: { rate, otHours, gross, lines: { <code id>: amount } }
+  // input: { rate, otHours, gross, lines: { <code id>: amount }, extras: [{ code, amount, include }] }
+  //   extras are stub lines the app did not recognize; only those with include=true are counted.
   function buildFromStub(input, s) {
     s = Object.assign({}, DEFAULTS, s || {});
     const lines = input.lines || {};
@@ -298,13 +317,101 @@
       subtotal += amount;
       return { id: c.id, code: c.code, label: c.label, group: c.group, amount };
     });
-    const ot = otCapCheck({ otPay, otHours: input.otHours, hourlyRate: rate }, s);
+    let extrasTotal = 0;
+    (input.extras || []).forEach(x => { if (x && x.include) extrasTotal += Math.max(0, num(x.amount)); });
+    subtotal += extrasTotal;
+    // CBA 29.5: incentives are part of the FLSA regular rate, so overtime is paid at 1.5x (base + incentives).
+    // Stubs print an hourly rate on each incentive line; when we don't have it, spread the annual amount over shift hours.
+    const incRate = num(input.incRate) > 0 ? num(input.incRate) : incentiveTotal / ANNUAL_HOURS.firefighter;
+    const regularRate = rate > 0 ? rate + incRate : 0;
+    const ot = otCapCheck({ otPay, otHours: input.otHours, hourlyRate: regularRate }, s);
     const total = subtotal - ot.excludedPay;
     const gross = Math.max(0, num(input.gross));
     return {
-      rate, items, subtotal, incentiveTotal, otPay, ot, total,
+      rate, incRate, regularRate, items, subtotal, incentiveTotal, otPay, extrasTotal, ot, total,
+      raisedPortion: total - incentiveTotal, flatPortion: incentiveTotal,
       gross, unaccounted: gross > 0 ? gross - subtotal : null,
     };
+  }
+
+  // ---------- pay stub PDF parsing ----------
+
+  // rows: array of strings, one per visual line of the stub, words joined by spaces in left-to-right order.
+  // Earnings lines read: CODE $rate(4 dp) hours(2 dp) $current $ytd, followed on the same visual row by a deduction.
+  function parseStubRows(rows) {
+    const money = '\\$\\s*([\\d,]+\\.\\d{2})';
+    const earn = new RegExp('([A-Z][A-Z0-9 .\\/&-]*?)\\s*\\$\\s*([\\d,]+\\.\\d{4})\\s+(\\d[\\d,]*\\.\\d{2})\\s*' + money + '\\s*' + money, 'g');
+    const out = { lines: {}, rate: '', incRate: 0, grossYtd: '', year: null, periodEnd: null, payDate: null, partialYear: false, matched: [], unmatched: [], excluded: [] };
+    const incIds = STUB_CODES.filter(c => c.group === 'inc').map(c => c.id);
+    const seen = {};
+    (rows || []).forEach(raw => {
+      const row = String(raw).replace(/\s+/g, ' ').trim();
+      let m;
+      earn.lastIndex = 0;
+      while ((m = earn.exec(row)) !== null) {
+        const code = m[1].trim().replace(/\s+/g, ' ').toUpperCase();
+        if (!code || code === 'TOTAL' || seen[code]) continue;
+        seen[code] = true;
+        const rate = num(m[2]), ytd = num(m[5]);
+        const id = STUB_ALIASES[code] || (/^(OT|OVERTIME)\b/.test(code) ? 'ot' : null);
+        if (id) {
+          out.lines[id] = (out.lines[id] || 0) + ytd;
+          out.matched.push({ code, id, ytd, rate });
+          if (id === 'regular' && rate > 0) out.rate = rate;
+          if (incIds.indexOf(id) >= 0) out.incRate += rate;
+        } else if (STUB_EXCLUDED.indexOf(code) >= 0) {
+          out.excluded.push({ code, ytd });
+        } else if (ytd > 0) {
+          out.unmatched.push({ code, ytd });
+        }
+      }
+      let g = /^GROSS PAY\s*\$\s*[\d,]+\.\d{2}\s*\$\s*([\d,]+\.\d{2})/i.exec(row);
+      if (g) out.grossYtd = num(g[1]);
+      if (!out.grossYtd) {
+        g = /^TOTAL\s+\d[\d,]*\.\d{2}\s*\$\s*[\d,]+\.\d{2}\s*\$\s*([\d,]+\.\d{2})/.exec(row);
+        if (g) out.grossYtd = num(g[1]);
+      }
+      const p = /(\d{1,2})\/(\d{1,2})\/(\d{4})\s*-\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(row);
+      if (p && !out.periodEnd) {
+        out.periodEnd = { month: +p[4], day: +p[5], year: +p[6] };
+        const before = row.slice(0, p.index);
+        const d = /(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/.exec(before.trim());
+        if (d) out.payDate = { month: +d[1], day: +d[2], year: +d[3] };
+      }
+    });
+    const ref = out.payDate || out.periodEnd;
+    if (ref) { out.year = ref.year; out.partialYear = ref.month < 12; }
+    return out;
+  }
+
+  // ---------- projection ----------
+
+  // Grows a known year's pay forward.
+  //  base: a number, or { raised, flat }. The raised portion (everything paid off the hourly rate:
+  //  regular, leave, holiday, overtime, out of class) grows by the contract raise where the CBA sets one,
+  //  otherwise by assumedPct. The flat portion (incentive pay) does not grow: CBA 29.5 says incentive
+  //  pay is not subject to pay increases.
+  function projectPay(base, fromYear, toYear, assumedPct) {
+    const raised0 = typeof base === 'object' && base ? Math.max(0, num(base.raised)) : Math.max(0, num(base));
+    const flat = typeof base === 'object' && base ? Math.max(0, num(base.flat)) : 0;
+    let raised = raised0;
+    const steps = [];
+    for (let y = fromYear + 1; y <= toYear; y++) {
+      const known = Object.prototype.hasOwnProperty.call(CONTRACT_RAISES, y);
+      const pct = known ? CONTRACT_RAISES[y] : num(assumedPct);
+      raised = raised * (1 + pct / 100);
+      steps.push({ year: y, pct, source: known ? 'contract' : 'assumed', amount: raised + flat });
+    }
+    return { amount: raised + flat, raised, flat, steps };
+  }
+
+  // Plain-language description of the projection rules, shown in the app and the PDF.
+  function projectionRulesText(assumedPct) {
+    const known = Object.keys(CONTRACT_RAISES).map(y => y + ' +' + CONTRACT_RAISES[y] + '%').join(', ');
+    return 'Projections grow pay that follows your hourly rate (regular, paid leave, holiday, overtime, working out of class) ' +
+      'by the contract raises where the CBA sets them (' + known + '), then by ' + num(assumedPct) + '% a year after the contract ends. ' +
+      'Incentive pay (paramedic, technical rescue, and so on) is held flat because the CBA says incentives do not receive pay increases. ' +
+      'Overtime hours are assumed to repeat each year. Projections are estimates, not guarantees.';
   }
 
   // ---------- pay builder (CBA estimate) ----------
@@ -332,8 +439,8 @@
   }
 
   return {
-    DEFAULTS, ANNUAL_HOURS, RANKS, PAY_SCALES, INCENTIVES, HOLIDAYS_PER_YEAR, HOLIDAY_HOURS, STUB_CODES, STUB_EXCLUDED,
+    DEFAULTS, ANNUAL_HOURS, RANKS, PAY_SCALES, INCENTIVES, HOLIDAYS_PER_YEAR, HOLIDAY_HOURS, STUB_CODES, STUB_EXCLUDED, STUB_ALIASES, CONTRACT_RAISES,
     num, parseDate, addMonths, monthLabel, monthsBetween, creditedService, splitYears,
-    benefitPct, explainPct, yearsToCap, afc, pension, dropSchedule, takeHomeBump, buildPay, otCapCheck, buildFromStub,
+    benefitPct, explainPct, yearsToCap, afc, topFiveIndexes, pension, dropSchedule, takeHomeBump, buildPay, otCapCheck, buildFromStub, parseStubRows, projectPay, projectionRulesText,
   };
 });

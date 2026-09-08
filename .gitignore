@@ -1,0 +1,3 @@
+# Local test fixtures with personal data. Never commit real pay stubs.
+test-stub.pdf
+*.stub.pdf

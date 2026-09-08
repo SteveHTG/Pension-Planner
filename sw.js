@@ -1,11 +1,13 @@
 /* 4350 Pension Planner service worker. Bump CACHE when shipping changes. */
-const CACHE = 'pp4350-v2';
+const CACHE = 'pp4350-v3';
 const ASSETS = [
   './',
   './index.html',
   './css/styles.css',
   './js/calc.js',
   './js/app.js',
+  './js/vendor/pdf.min.js',
+  './js/vendor/pdf.worker.min.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

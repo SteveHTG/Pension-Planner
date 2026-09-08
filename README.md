@@ -7,9 +7,13 @@ It is a static progressive web app: no server, no accounts, and nothing you type
 
 ## What it does
 
-- **Earnings** - enter your 5 highest years of pensionable pay (actual or expected). Type a total, or open
-  the pay stub helper and copy the YTD column from your last stub of the year. It sums the pensionable pay
-  codes, estimates overtime hours from YTD overtime pay, and removes anything over the 300-hour cap.
+- **Earnings** - enter your 5 highest years of pensionable pay. For years you have worked, upload the last
+  pay stub PDF of the year: it is parsed in the browser (nothing is uploaded), the pensionable pay codes are
+  summed, overtime hours are estimated from YTD overtime pay at 1.5x the regular rate (base plus incentive
+  hourly rates), and anything over the 300-hour cap is removed. For future years, **Project future years**
+  grows a known year by the contract raises (2025 +15%, 2026 +4%, 2027 +4%) and an assumed raise after that,
+  holding incentive pay flat because the CBA says incentives do not receive pay increases. You can also
+  type any year's total directly.
 - **Pension** - shows your monthly and annual pension, the percentage of your 5-year average you have earned,
   and how the number was reached.
 - **DROP** - shows the frozen monthly benefit deposited into your DROP account and a year-by-year accordion.

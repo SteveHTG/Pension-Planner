@@ -91,10 +91,23 @@
 
       <div class="card">
         <div class="card-head">
-          <h2>Your 5 highest years</h2>
+          <h2>Your pay by year</h2>
+          <span class="badge" id="countedBadge">0 of 0 counted</span>
         </div>
-        <p class="hint">Type each year's total pensionable pay, or tap <strong>Pay stub</strong> to add it up from the YTD column of your last pay stub of the year.</p>
+        <p class="hint">Your pension uses the average of your <strong>5 highest years</strong> out of the last 10, so add every year you can. For years you've already worked, tap <strong>Pay stub</strong> and upload the last stub of that year. For years still ahead, use <strong>Project future years</strong> below, or type your own estimate. The 5 years that count are marked in red.</p>
         <div id="earningsRows" class="erows"></div>
+        <button class="btn btn-outline btn-block" type="button" id="addYear" style="margin-top:10px">+ Add another year</button>
+        <div class="project-box" id="projectBox">
+          <div class="card-head"><h3>Project future years</h3><span class="badge badge-soft" id="projRaisesBadge">2026 +4% · 2027 +4%</span></div>
+          <p class="hint">Start from a year you know. Contract raises are applied where the CBA sets them, then your assumed raise for the years after the contract.</p>
+          <div class="grid-2">
+            <label class="field"><span>Start from</span><select id="projBase"></select></label>
+            <label class="field"><span>Raise after 2027 (% per year)</span><input type="text" inputmode="decimal" id="projRaise" placeholder="3"></label>
+          </div>
+          <div class="proj-preview" id="projPreview"></div>
+          <button class="btn btn-block" type="button" id="projFill">Fill future years</button>
+          <p class="hint" id="projRulesNote"></p>
+        </div>
         <div class="afc-box">
           <div class="afc-item">
             <span class="afc-label">5-year average</span>

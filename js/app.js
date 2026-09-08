@@ -23,12 +23,13 @@
   function blankEarning() {
     return { label: '', labelAuto: true, amount: '', open: false, builder: { stub: blankStub() } };
   }
-  function blankStub() { return { rate: '', otHours: '', gross: '', lines: {} }; }
+  function blankStub() { return { rate: '', incRate: 0, otHours: '', gross: '', lines: {}, extras: [], imported: null }; }
   function defaultState() {
     return {
       hireDate: '', targetDate: '', useManual: false, manualYears: '',
       earnings: [blankEarning(), blankEarning(), blankEarning(), blankEarning(), blankEarning()],
       dropYears: 8, currentPay: '', scenarios: [],
+      proj: { baseIndex: -1, raisePct: 3 },
       settings: Object.assign({}, C.DEFAULTS),
       includeMonthly: false, tab: 'earnings', openYears: { 1: true },
     };
@@ -50,6 +51,7 @@
       });
       while (out.earnings.length < 5) out.earnings.push(blankEarning());
       out.scenarios = (Array.isArray(s.scenarios) ? s.scenarios : []).slice(0, 3);
+      out.proj = Object.assign({ baseIndex: -1, raisePct: 3 }, s.proj || {});
       out.openYears = s.openYears || { 1: true };
       return out;
     } catch (e) { return d; }
@@ -115,20 +117,36 @@
   // =========================================================
   // EARNINGS
   // =========================================================
-  function defaultLabel(i) {
-    const t = C.parseDate(state.targetDate);
-    if (!t) return '';
-    const recent = t.getMonth() >= 6 ? t.getFullYear() : t.getFullYear() - 1;
-    return String(recent - i);
-  }
+  // Auto-labelled rows get the most recent years before the DROP date that no other row already uses.
   function refreshAutoLabels() {
+    const t = C.parseDate(state.targetDate);
+    const recent = t ? (t.getMonth() >= 6 ? t.getFullYear() : t.getFullYear() - 1) : null;
+    const taken = new Set(state.earnings.filter(e => !e.labelAuto && e.label).map(e => String(e.label).trim()));
+    let y = recent;
     state.earnings.forEach((e, i) => {
-      if (e.labelAuto) {
-        e.label = defaultLabel(i);
-        const inp = $('#erow-' + i + ' .label-in');
-        if (inp && document.activeElement !== inp) inp.value = e.label;
+      if (!e.labelAuto) return;
+      let label = '';
+      if (recent != null) {
+        while (taken.has(String(y))) y--;
+        label = String(y); taken.add(label); y--;
       }
+      e.label = label;
+      const inp = $('#erow-' + i + ' .label-in');
+      if (inp && document.activeElement !== inp) inp.value = e.label;
     });
+  }
+
+  function addYearRow() {
+    if (state.earnings.length >= 10) { toast('The plan looks at your last 10 years'); return; }
+    state.earnings.push(blankEarning());
+    save(); buildEarningsRows(); update();
+  }
+  function removeYearRow(i) {
+    if (state.earnings.length <= 5) return;
+    state.earnings.splice(i, 1);
+    if (state.proj.baseIndex === i) state.proj.baseIndex = -1;
+    else if (state.proj.baseIndex > i) state.proj.baseIndex -= 1;
+    save(); buildEarningsRows(); update();
   }
 
   function buildEarningsRows() {
@@ -143,16 +161,22 @@
           '<input class="label-in" type="text" aria-label="Year" placeholder="Year ' + (i + 1) + '">' +
           '<div class="money"><span class="cur">$</span><input class="amount-in" type="text" inputmode="decimal" placeholder="' + (i === 0 ? 'Most recent year' : '0') + '" aria-label="Annual pay ' + (i + 1) + '"></div>' +
           '<button class="chip build-toggle" type="button">Pay stub</button>' +
+          (state.earnings.length > 5 ? '<button class="icon-btn row-remove" type="button" aria-label="Remove this year"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' : '') +
         '</div>' +
+        '<div class="erow-meta" hidden></div>' +
         '<div class="builder" hidden></div>';
       wrap.appendChild(row);
 
       const labelIn = $('.label-in', row);
       labelIn.value = e.label || '';
-      labelIn.addEventListener('input', () => { e.label = labelIn.value; e.labelAuto = labelIn.value.trim() === ''; if (e.labelAuto) e.label = defaultLabel(i); save(); });
+      labelIn.addEventListener('input', () => { e.label = labelIn.value; e.labelAuto = labelIn.value.trim() === ''; if (e.labelAuto) refreshAutoLabels(); save(); renderProjection(); });
       labelIn.addEventListener('blur', () => { if (e.labelAuto) labelIn.value = e.label; });
 
-      bindMoney($('.amount-in', row), () => e.amount, v => { e.amount = v; }, update);
+      // Once a row has pay in it, its year label stays put even if other rows are relabelled.
+      bindMoney($('.amount-in', row), () => e.amount, v => { e.amount = v; e.source = 'manual'; e.meta = ''; if (v !== '' && e.labelAuto && e.label) e.labelAuto = false; }, update);
+      const rm = $('.row-remove', row);
+      if (rm) rm.addEventListener('click', () => removeYearRow(i));
+      renderRowMeta(i);
 
       const toggle = $('.build-toggle', row);
       const builder = $('.builder', row);
@@ -174,11 +198,30 @@
     renderStubForm(i);
   }
 
+  function renderRowMeta(i) {
+    const e = state.earnings[i];
+    const row = $('#erow-' + i);
+    const el = row && $('.erow-meta', row);
+    if (!el) return;
+    const counted = C.topFiveIndexes(state.earnings.map(x => x.amount));
+    const has = C.num(e.amount) > 0;
+    const isCounted = counted.indexOf(i) >= 0;
+    row.classList.toggle('counted', isCounted);
+    row.classList.toggle('uncounted', has && !isCounted);
+    let h = '';
+    if (e.source === 'stub') h += '<span class="tag tag-stub">Pay stub</span><span>' + esc(e.meta || '') + '</span>';
+    else if (e.source === 'projected') h += '<span class="tag tag-proj">Projected</span><span>' + esc(e.meta || '') + '</span>';
+    if (has && !isCounted) h += '<span class="tag tag-out">Not in your top 5</span>';
+    el.hidden = !h;
+    el.innerHTML = h;
+  }
+
   // ----- from pay stub -----
   function renderStubForm(i) {
     const e = state.earnings[i];
     const st = e.builder.stub;
     const host = $('#erow-' + i + ' .builder .builder-panel');
+    const ok = !!(st.imported && !st.imported.error);
     const groups = [
       { id: 'pay', title: 'Regular pay and paid leave' },
       { id: 'ot', title: 'Overtime' },
@@ -189,17 +232,35 @@
       '<label class="stub-row"><span class="stub-code"><span class="code">' + c.code + '</span><span class="stub-label">' + c.label + '</span></span>' +
       '<span class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-line="' + c.id + '" placeholder="0" aria-label="' + c.label + ' year to date"></span></label>';
     host.innerHTML =
-      '<p class="hint" style="margin-top:0">Grab the <strong>last pay stub of the year</strong> and copy the <strong>YTD</strong> column from the EARNINGS block. Leave anything you don\'t have at 0.</p>' +
-      '<div class="grid-2">' +
-        '<label class="field"><span>Hourly rate (RATE on the REGULAR line)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="rate" placeholder="0.00"></div></label>' +
-        '<label class="field"><span>Overtime hours this year</span><input type="text" inputmode="decimal" data-s="otHours" placeholder="Blank = estimate from OT pay"></label>' +
+      '<div class="import-box">' +
+        '<div class="import-title">Upload the last pay stub of the year</div>' +
+        '<p class="hint">Download the PDF stub from the payroll portal and pick it here. It is read right on your phone or computer and never sent anywhere.</p>' +
+        '<label class="btn btn-primary btn-block file-btn"><input type="file" accept="application/pdf,.pdf" data-file>' +
+          '<svg viewBox="0 0 24 24" class="btn-ico"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v3h16v-3"/></svg>' + (ok ? 'Upload a different stub' : 'Choose pay stub PDF') + '</label>' +
+        '<div class="import-status" data-import-status></div>' +
+        '<div data-import-result>' + importResultHtml(st) + '</div>' +
       '</div>' +
-      groups.map(g => '<div class="stub-group"><div class="stub-group-title">' + g.title + '</div>' + C.STUB_CODES.filter(c => c.group === g.id).map(rowHtml).join('') + '</div>').join('') +
-      '<label class="field" style="margin-top:12px"><span>Gross pay YTD (optional, from ADVICE TOTALS, to check nothing was missed)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="gross" placeholder="0"></div></label>' +
+      '<details class="adv review"' + (ok ? '' : ' open') + '><summary>' + (ok ? 'Review or edit the lines we read' : 'Or type the YTD lines yourself') + '</summary>' +
+        '<div class="grid-2" style="margin-top:10px">' +
+          '<label class="field"><span>Hourly rate (RATE on the REGULAR line)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="rate" placeholder="0.00"></div></label>' +
+          '<label class="field"><span>Overtime hours this year</span><input type="text" inputmode="decimal" data-s="otHours" placeholder="Blank = estimate from OT pay"></label>' +
+        '</div>' +
+        groups.map(g => '<div class="stub-group"><div class="stub-group-title">' + g.title + '</div>' + C.STUB_CODES.filter(c => c.group === g.id).map(rowHtml).join('') + '</div>').join('') +
+        '<label class="field" style="margin-top:12px"><span>Gross pay YTD (optional, from ADVICE TOTALS, to check nothing was missed)</span><div class="money"><span class="cur">$</span><input type="text" inputmode="decimal" data-s="gross" placeholder="0"></div></label>' +
+      '</details>' +
       '<div class="ot-check" data-ot-check></div>' +
       '<div class="build-summary"><dl class="kv-list" data-summary></dl></div>' +
       '<button class="btn btn-primary btn-block" type="button" data-use style="margin-top:12px">Use this total</button>';
 
+    $('[data-file]', host).addEventListener('change', ev => {
+      const f = ev.target.files && ev.target.files[0];
+      if (f) importStubFile(i, f);
+      ev.target.value = '';
+    });
+    $$('[data-extra]', host).forEach(cb => cb.addEventListener('change', () => {
+      const x = st.extras[+cb.dataset.extra];
+      if (x) { x.include = cb.checked; save(); renderStubOut(i); }
+    }));
     bindMoney($('[data-s="rate"]', host), () => st.rate, v => { st.rate = v; }, () => renderStubOut(i));
     bindMoney($('[data-s="gross"]', host), () => st.gross, v => { st.gross = v; }, () => renderStubOut(i));
     const oh = $('[data-s="otHours"]', host);
@@ -212,11 +273,29 @@
     $('[data-use]', host).addEventListener('click', () => {
       const out = C.buildFromStub(st, state.settings);
       e.amount = Math.round(out.total * 100) / 100;
+      if (e.source !== 'stub') { e.source = 'manual'; e.meta = ''; }
       $('#erow-' + i + ' .amount-in').value = fmtIn(e.amount);
       save(); update();
-      toast('Year ' + (i + 1) + ' set to ' + money0(e.amount));
+      toast((e.label || 'Year ' + (i + 1)) + ' set to ' + money0(e.amount));
     });
     renderStubOut(i);
+  }
+
+  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  function importResultHtml(st) {
+    const imp = st.imported;
+    if (!imp) return '';
+    if (imp.error) return '<div class="import-result err">' + esc(imp.error) + '</div>';
+    const pe = imp.periodEnd;
+    const when = pe ? ' · pay period ending ' + pe.month + '/' + pe.day + '/' + pe.year : '';
+    let h = '<div class="import-result ok">✓ Read <strong>' + esc(imp.name) + '</strong>' + when + '. ' + plural(imp.matched, 'pay line') + ' filled' + (imp.rate ? ', hourly rate ' + money(imp.rate) : '') + '.';
+    if (imp.partial && pe) h += '<span class="warn-line">⚠ This stub is from ' + MONTH_NAMES[pe.month - 1] + ', so the YTD figures cover only part of the year. Use the last stub of the year when you have it.</span>';
+    if (imp.excluded && imp.excluded.length) h += '<span class="sub">Not counted (not pensionable): ' + imp.excluded.map(x => esc(x.code) + ' ' + money(x.ytd)).join(', ') + '</span>';
+    if (st.extras && st.extras.length) {
+      h += '<span class="sub">Lines the app did not recognize. Tick any that are pensionable pay:</span>' +
+        st.extras.map((x, k) => '<label class="extra-line check"><input type="checkbox" data-extra="' + k + '"' + (x.include ? ' checked' : '') + '><span class="box"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg></span><span class="code">' + esc(x.code) + '</span><span class="amt">' + money(x.amount) + '</span></label>').join('');
+    }
+    return h + '</div>';
   }
 
   function renderStubOut(i) {
@@ -224,10 +303,11 @@
     const host = $('#erow-' + i + ' .builder .builder-panel');
     if (!host) return;
     const out = C.buildFromStub(st, state.settings);
-    $('[data-ot-check]', host).innerHTML = otCheckHtml(out.ot, out.rate);
+    $('[data-ot-check]', host).innerHTML = otCheckHtml(out.ot, out.regularRate);
     let sum =
       '<div><dt>Pay entered</dt><dd>' + money(out.subtotal) + '</dd></div>' +
-      (out.incentiveTotal ? '<div><dt>of which incentives</dt><dd>' + money(out.incentiveTotal) + '</dd></div>' : '');
+      (out.incentiveTotal ? '<div><dt>of which incentives (held flat in projections)</dt><dd>' + money(out.incentiveTotal) + '</dd></div>' : '') +
+      (out.extrasTotal ? '<div><dt>Other lines you included</dt><dd>' + money(out.extrasTotal) + '</dd></div>' : '');
     if (out.ot.excludedPay > 0) sum += '<div><dt>Overtime over the cap (removed)</dt><dd>−' + money(out.ot.excludedPay) + '</dd></div>';
     sum += '<div class="total"><dt>Pensionable total</dt><dd>' + money(out.total) + '</dd></div>';
     if (out.unaccounted != null) {
@@ -235,6 +315,145 @@
       sum += '<div><dt>' + (diff >= -0.005 ? 'Not counted (' + C.STUB_EXCLUDED.join(', ').toLowerCase() + ')' : 'Entered more than gross, check your numbers') + '</dt><dd>' + money(Math.abs(diff)) + '</dd></div>';
     }
     $('[data-summary]', host).innerHTML = sum;
+  }
+
+  // ----- PDF import (runs entirely in the browser) -----
+  let pdfJsPromise = null;
+  function loadPdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if (!pdfJsPromise) {
+      pdfJsPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'js/vendor/pdf.min.js';
+        s.onload = () => { try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'js/vendor/pdf.worker.min.js'; resolve(window.pdfjsLib); } catch (e) { reject(e); } };
+        s.onerror = () => { pdfJsPromise = null; reject(new Error('The PDF reader could not be loaded. Check your connection once and try again.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return pdfJsPromise;
+  }
+
+  // Returns the PDF as visual rows of text, left to right, top to bottom.
+  async function extractPdfRows(file) {
+    const lib = await loadPdfJs();
+    const data = new Uint8Array(await file.arrayBuffer());
+    const pdf = await lib.getDocument({ data }).promise;
+    const rows = [];
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const items = content.items
+        .filter(it => it.str && it.str.trim())
+        .map(it => ({ x: it.transform[4], y: it.transform[5], s: it.str.trim() }));
+      items.sort((a, b) => (b.y - a.y) || (a.x - b.x));
+      let cur = null;
+      items.forEach(it => {
+        if (!cur || Math.abs(cur.y - it.y) > 2.5) { cur = { y: it.y, items: [] }; rows.push(cur); }
+        cur.items.push(it);
+      });
+    }
+    return rows.map(r => r.items.sort((a, b) => a.x - b.x).map(x => x.s).join(' '));
+  }
+
+  async function importStubFile(i, file) {
+    const e = state.earnings[i];
+    const st = e.builder.stub;
+    const status = $('#erow-' + i + ' [data-import-status]');
+    const isPdf = /pdf/i.test(file.type || '') || /\.pdf$/i.test(file.name || '');
+    try {
+      if (!isPdf) throw new Error('Photos and screenshots are not supported yet. Download the PDF pay stub from the payroll portal and upload that.');
+      if (status) status.textContent = 'Reading your stub…';
+      const rows = await extractPdfRows(file);
+      const parsed = C.parseStubRows(rows);
+      if (!parsed.matched.length) throw new Error('No earnings lines were found in that PDF. Make sure it is a City of Clermont pay stub PDF, not a scan or a photo.');
+      st.lines = Object.assign({}, parsed.lines);
+      st.rate = parsed.rate || '';
+      st.incRate = parsed.incRate || 0;
+      st.gross = parsed.grossYtd || '';
+      st.otHours = '';
+      st.extras = parsed.unmatched.map(x => ({ code: x.code, amount: x.ytd, include: false }));
+      st.imported = { name: file.name, year: parsed.year, periodEnd: parsed.periodEnd, matched: parsed.matched.length, rate: parsed.rate, excluded: parsed.excluded, partial: parsed.partialYear };
+      if (parsed.year) { e.label = String(parsed.year); e.labelAuto = false; }
+      const out = C.buildFromStub(st, state.settings);
+      e.amount = Math.round(out.total * 100) / 100;
+      e.source = 'stub';
+      e.meta = parsed.periodEnd ? 'through ' + parsed.periodEnd.month + '/' + parsed.periodEnd.day + '/' + parsed.periodEnd.year : '';
+      save(); buildEarningsRows(); update();
+      toast((parsed.year || 'Year') + ' filled from your stub: ' + money0(e.amount));
+    } catch (err) {
+      st.imported = { error: (err && err.message) ? err.message : 'That file could not be read.' };
+      save(); buildEarningsRows(); update();
+    }
+  }
+
+  // ----- projection -----
+  function rowYear(e) { const y = parseInt(String(e.label || '').trim(), 10); return Number.isFinite(y) && y > 1900 ? y : null; }
+  function projCandidates() {
+    return state.earnings
+      .map((e, i) => ({ i, e, year: rowYear(e), amount: C.num(e.amount) }))
+      .filter(c => c.year && c.amount > 0 && c.e.source !== 'projected');
+  }
+  function projBaseParts(e) {
+    if (e.source === 'stub' && e.builder && e.builder.stub) {
+      const out = C.buildFromStub(e.builder.stub, state.settings);
+      return { raised: out.raisedPortion, flat: out.flatPortion, split: true };
+    }
+    return { raised: C.num(e.amount), flat: 0, split: false };
+  }
+  function projTargets(base) {
+    return state.earnings
+      .map((e, i) => ({ i, e, year: rowYear(e) }))
+      .filter(t => t.year && t.year > base.year && t.i !== base.i && t.e.source !== 'stub')
+      .sort((a, b) => a.year - b.year);
+  }
+  function renderProjection() {
+    const sel = $('#projBase'), prev = $('#projPreview'), btn = $('#projFill'), note = $('#projRulesNote');
+    if (!sel) return;
+    $('#projRaisesBadge').textContent = Object.keys(C.CONTRACT_RAISES).map(y => y + ' +' + C.CONTRACT_RAISES[y] + '%').join(' · ');
+    const cands = projCandidates();
+    if (!cands.length) {
+      sel.innerHTML = '<option value="">Add a year with pay first</option>'; sel.disabled = true; btn.disabled = true; prev.innerHTML = '';
+      note.textContent = C.projectionRulesText(state.proj.raisePct);
+      return;
+    }
+    sel.disabled = false;
+    let baseIdx = state.proj.baseIndex;
+    if (!cands.some(c => c.i === baseIdx)) {
+      const stubs = cands.filter(c => c.e.source === 'stub');
+      baseIdx = (stubs.length ? stubs : cands).slice().sort((a, b) => b.year - a.year)[0].i;
+      state.proj.baseIndex = baseIdx;
+    }
+    sel.innerHTML = cands.map(c => '<option value="' + c.i + '"' + (c.i === baseIdx ? ' selected' : '') + '>' + c.year + ' · ' + money0(c.amount) + (c.e.source === 'stub' ? ' (pay stub)' : '') + '</option>').join('');
+    const base = cands.find(c => c.i === baseIdx);
+    const parts = projBaseParts(base.e);
+    const targets = projTargets(base);
+    if (!targets.length) {
+      prev.innerHTML = '<div class="proj-empty">No later years to fill. Rows labeled with a year after ' + base.year + ' will be projected.</div>';
+      btn.disabled = true;
+    } else {
+      btn.disabled = false;
+      prev.innerHTML = targets.map(t => {
+        const r = C.projectPay(parts, base.year, t.year, state.proj.raisePct);
+        const last = r.steps[r.steps.length - 1];
+        return '<div class="proj-chip ' + last.source + '"><small>' + t.year + ' · ' + last.source + ' +' + last.pct + '%</small><strong>' + money0(r.amount) + '</strong></div>';
+      }).join('');
+    }
+    note.textContent = C.projectionRulesText(state.proj.raisePct) + (parts.split ? '' : ' The start year has no pay stub breakdown, so the raise is applied to the whole amount, incentives included.');
+  }
+  function fillProjection() {
+    const cands = projCandidates();
+    const base = cands.find(c => c.i === state.proj.baseIndex);
+    if (!base) return;
+    const parts = projBaseParts(base.e);
+    const targets = projTargets(base);
+    targets.forEach(t => {
+      const r = C.projectPay(parts, base.year, t.year, state.proj.raisePct);
+      t.e.amount = Math.round(r.amount * 100) / 100;
+      t.e.source = 'projected';
+      t.e.meta = 'from ' + base.year + (parts.split ? ', incentives held flat' : '');
+    });
+    save(); buildEarningsRows(); update();
+    toast(targets.length ? 'Filled ' + plural(targets.length, 'year') + ' from ' + base.year : 'Nothing to fill');
   }
 
   function otCheckHtml(ot, rate) {
@@ -252,9 +471,13 @@
     const { years, pension } = computed;
     const badge = $('#serviceBadge');
     badge.textContent = svcText(years);
+    state.earnings.forEach((e, i) => renderRowMeta(i));
+    const withPay = state.earnings.filter(e => C.num(e.amount) > 0).length;
+    $('#countedBadge').textContent = pension.yearsUsed + ' of ' + withPay + ' counted';
+    $('#addYear').disabled = state.earnings.length >= 10;
     $('#afcAnnual').textContent = money(pension.afcAnnual);
     $('#afcMonthly').textContent = money(pension.afcMonthly);
-    $('#afcNote').textContent = pension.yearsUsed === 0 ? 'enter your earnings above' : pension.yearsUsed < 5 ? 'average of ' + pension.yearsUsed + ' year' + (pension.yearsUsed === 1 ? '' : 's') + ' entered' : 'per month';
+    $('#afcNote').textContent = pension.yearsUsed === 0 ? 'enter your earnings above' : pension.yearsUsed < 5 ? 'average of ' + pension.yearsUsed + ' year' + (pension.yearsUsed === 1 ? '' : 's') + ' entered' : 'best 5 years';
     const hint = $('#eligHint');
     if (years > 0 && years < 20) {
       hint.hidden = false;
@@ -517,9 +740,11 @@
       kv('DROP entry / retirement date', longDate(C.parseDate(state.targetDate))) +
       kv('Credited service', svcText(years) + ' (' + (Math.round(years * 100) / 100) + ' yrs)') +
       kv('Years of pay used', pension.yearsUsed + ' of 5') + '</div>';
-    h += '<h3>Highest 5 years of pensionable pay</h3><table class="rp-table"><thead><tr><th>Year</th><th>Pay</th></tr></thead><tbody>' +
-      state.earnings.map((e, i) => '<tr><td>' + esc(e.label || ('Year ' + (i + 1))) + '</td><td>' + (e.amount === '' ? '—' : money(C.num(e.amount))) + '</td></tr>').join('') +
-      '<tr class="yr"><td>5-year average</td><td>' + money(pension.afcAnnual) + ' per year · ' + money(pension.afcMonthly) + ' per month</td></tr></tbody></table>';
+    const counted = C.topFiveIndexes(state.earnings.map(x => x.amount));
+    h += '<h3>Pensionable pay by year (best 5 counted)</h3><table class="rp-table"><thead><tr><th>Year</th><th>Counted</th><th>Pay</th></tr></thead><tbody>' +
+      state.earnings.map((e, i) => '<tr><td>' + esc(e.label || ('Year ' + (i + 1))) + (e.source === 'stub' ? ' (pay stub' + (e.meta ? ' ' + esc(e.meta) : '') + ')' : e.source === 'projected' ? ' (projected' + (e.meta ? ' ' + esc(e.meta) : '') + ')' : '') + '</td><td>' + (counted.indexOf(i) >= 0 ? 'Yes' : (C.num(e.amount) > 0 ? 'No' : '')) + '</td><td>' + (e.amount === '' ? '—' : money(C.num(e.amount))) + '</td></tr>').join('') +
+      '<tr class="yr"><td>Average of the best ' + pension.yearsUsed + '</td><td></td><td>' + money(pension.afcAnnual) + ' per year · ' + money(pension.afcMonthly) + ' per month</td></tr></tbody></table>' +
+      (state.earnings.some(e => e.source === 'projected') ? '<p class="rp-note">' + esc(C.projectionRulesText(state.proj.raisePct)) + '</p>' : '');
 
     h += '<h2>Pension</h2><div class="rp-big"><div><span>Monthly pension</span><strong>' + money(pension.monthly) + '</strong></div><div><span>Annual pension</span><strong>' + money(pension.annual) + '</strong></div><div><span>Benefit</span><strong>' + pct(pension.pct) + '</strong></div></div>' +
       '<p class="rp-note">' + esc(pension.explanation) + '. Monthly pension = ' + money(pension.afcMonthly) + ' × ' + pct(pension.pct) + '. Normal form of payment: life with 120 payments guaranteed. Optional payment forms are not reflected.</p>';
@@ -563,6 +788,7 @@
     compute();
     refreshAutoLabels();
     renderEarnings();
+    renderProjection();
     renderPension();
     renderDrop();
     renderSettings();
@@ -578,6 +804,13 @@
     useManual.addEventListener('change', () => { state.useManual = useManual.checked; $('#manualWrap').hidden = !state.useManual; save(); update(); });
     manual.addEventListener('input', () => { state.manualYears = manual.value; save(); update(); });
     bindMoney($('#currentPay'), () => state.currentPay, v => { state.currentPay = v; }, update);
+    $('#projBase').addEventListener('change', ev => { state.proj.baseIndex = +ev.target.value; save(); renderProjection(); });
+    const pr = $('#projRaise');
+    pr.value = state.proj.raisePct;
+    pr.addEventListener('input', () => { if (pr.value.trim() !== '') { state.proj.raisePct = C.num(pr.value); save(); renderProjection(); } });
+    pr.addEventListener('blur', () => { pr.value = state.proj.raisePct; });
+    $('#projFill').addEventListener('click', fillProjection);
+    $('#addYear').addEventListener('click', addYearRow);
   }
 
   function bindGlobal() {
@@ -613,7 +846,12 @@
   init();
 
   // Small debug surface for support and testing (read-only helpers).
-  window.PensionPlanner = { buildReport: () => { compute(); return buildReport(); }, getState: () => JSON.parse(JSON.stringify(state)) };
+  window.PensionPlanner = {
+    buildReport: () => { compute(); return buildReport(); },
+    getState: () => JSON.parse(JSON.stringify(state)),
+    importStub: (i, file) => importStubFile(i, file),
+    parseStubRows: rows => C.parseStubRows(rows),
+  };
 
   // Offline support. Skipped on localhost so development reloads always fetch fresh files.
   const isLocalDev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
