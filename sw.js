@@ -1,5 +1,5 @@
 /* 4350 Pension Planner service worker. Bump CACHE when shipping changes. */
-const CACHE = 'pp4350-v3';
+const CACHE = 'pp4350-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -15,6 +15,14 @@ const ASSETS = [
   './icons/apple-touch-icon.png',
   './icons/favicon-32.png',
   './icons/logo-256.png',
+  './img/help/dates.png',
+  './img/help/stub.png',
+  './img/help/stub-done.png',
+  './img/help/project.png',
+  './img/help/counted.png',
+  './img/help/pension.png',
+  './img/help/drop.png',
+  './img/help/help.png',
 ];
 
 self.addEventListener('install', (event) => {

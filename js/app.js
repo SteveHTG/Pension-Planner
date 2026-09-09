@@ -31,7 +31,7 @@
       dropYears: 8, currentPay: '', scenarios: [],
       proj: { baseIndex: -1, raisePct: 3 },
       settings: Object.assign({}, C.DEFAULTS),
-      includeMonthly: false, tab: 'earnings', openYears: { 1: true },
+      includeMonthly: false, tab: 'earnings', openYears: { 1: true }, introSeen: false,
     };
   }
   function load() {
@@ -56,9 +56,61 @@
       return out;
     } catch (e) { return d; }
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ } }
+  // ?demo=<scene> loads sample data for the help screenshots. Nothing is saved in demo mode.
+  const DEMO = new URLSearchParams(location.search).get('demo');
+  function save() { if (DEMO) return; try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ } }
 
-  let state = load();
+  let state = DEMO ? demoState(DEMO) : load();
+
+  function demoState(scene) {
+    const s = defaultState();
+    s.introSeen = true; s.hireDate = '2009-03-15'; s.targetDate = '2031-03-01'; s.dropYears = 8; s.tab = 'earnings';
+    const stub = {
+      rate: 40.5, incRate: 6.11, otHours: '', gross: 125055.36, extras: [],
+      lines: { regular: 84000, vacation: 9500, sick: 5000, holiday: 3200, holwork: 4200, adminlv: 0, jury: 0, ot: 6500, woc: 2000, special: 300, retro: 0, paramedic: 11000, trttech: 2000, trtteam: 1500, surface: 750 },
+      imported: { name: 'Dec 2025 pay stub.pdf', year: 2025, periodEnd: { month: 12, day: 14, year: 2025 }, matched: 12, rate: 40.5, excluded: [{ code: 'LUMP SUM', ytd: 100 }, { code: 'UNIFORMS', ytd: 205.36 }], partial: false },
+    };
+    const withStub = (row, imported) => {
+      row.label = '2025'; row.labelAuto = false;
+      row.builder.stub = JSON.parse(JSON.stringify(stub));
+      if (!imported) { row.builder.stub.imported = null; row.builder.stub.lines = {}; row.builder.stub.rate = ''; row.builder.stub.gross = ''; return; }
+      const out = C.buildFromStub(row.builder.stub, s.settings);
+      row.amount = Math.round(out.total * 100) / 100; row.source = 'stub'; row.meta = 'through 12/14/2025';
+    };
+    if (scene === 'stub') { withStub(s.earnings[0], false); s.earnings[0].open = true; }
+    if (scene === 'stub-done') { withStub(s.earnings[0], true); s.earnings[0].open = true; }
+    if (scene === 'project' || scene === 'counted' || scene === 'drop' || scene === 'pension') {
+      withStub(s.earnings[0], true);
+      s.proj.baseIndex = 0;
+      if (scene !== 'project') {
+        const base = C.buildFromStub(s.earnings[0].builder.stub, s.settings);
+        s.earnings.push(blankEarning());
+        [2030, 2029, 2028, 2027, 2026].forEach((y, k) => {
+          const r = s.earnings[k + 1];
+          r.label = String(y); r.labelAuto = false;
+          r.amount = Math.round(C.projectPay({ raised: base.raisedPortion, flat: base.flatPortion }, 2025, y, 3).amount * 100) / 100;
+          r.source = 'projected'; r.meta = 'from 2025, incentives held flat';
+        });
+      }
+      if (scene === 'drop') s.tab = 'drop';
+      if (scene === 'pension') s.tab = 'pension';
+    }
+    return s;
+  }
+  function applyDemoScene() {
+    if (!DEMO) return;
+    document.body.classList.add('demo');
+    const targets = {
+      dates: '#hireDate', stub: '#erow-0 .file-btn', 'stub-done': '#erow-0 [data-import-result]', project: '#projectBox',
+      counted: '#earningsRows', drop: '#dropYears', pension: '.hero',
+    };
+    const focus = { dates: '.panel.active .card', stub: '#erow-0 .import-box', 'stub-done': '#erow-0 .import-box', project: '#projectBox', counted: '#earningsRows', drop: '#dropYears', pension: '.panel.active .hero' };
+    const hl = $(targets[DEMO]);
+    if (hl) hl.classList.add('demo-hl');
+    const f = $(focus[DEMO]);
+    if (f) f.scrollIntoView({ block: DEMO === 'dates' || DEMO === 'pension' ? 'start' : 'center' });
+    if (DEMO === 'dates' || DEMO === 'pension') window.scrollTo(0, 0);
+  }
   let computed = null;
 
   // ---------- derived ----------
@@ -95,6 +147,20 @@
     $$('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
     $('#topbarSub').textContent = TAB_NAMES[name];
     if (!(opts && opts.keepScroll)) window.scrollTo(0, 0);
+  }
+
+  // ---------- intro / help ----------
+  function showIntro() {
+    const el = $('#intro');
+    el.hidden = false;
+    document.body.classList.add('intro-open');
+    $('.intro-body', el).scrollTop = 0;
+    setTimeout(() => { const b = $('.intro-foot .btn', el); if (b) b.focus({ preventScroll: true }); }, 50);
+  }
+  function hideIntro() {
+    $('#intro').hidden = true;
+    document.body.classList.remove('intro-open');
+    if (!state.introSeen) { state.introSeen = true; save(); }
   }
 
   // ---------- toast ----------
@@ -161,7 +227,6 @@
           '<input class="label-in" type="text" aria-label="Year" placeholder="Year ' + (i + 1) + '">' +
           '<div class="money"><span class="cur">$</span><input class="amount-in" type="text" inputmode="decimal" placeholder="' + (i === 0 ? 'Most recent year' : '0') + '" aria-label="Annual pay ' + (i + 1) + '"></div>' +
           '<button class="chip build-toggle" type="button">Pay stub</button>' +
-          (state.earnings.length > 5 ? '<button class="icon-btn row-remove" type="button" aria-label="Remove this year"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' : '') +
         '</div>' +
         '<div class="erow-meta" hidden></div>' +
         '<div class="builder" hidden></div>';
@@ -174,8 +239,6 @@
 
       // Once a row has pay in it, its year label stays put even if other rows are relabelled.
       bindMoney($('.amount-in', row), () => e.amount, v => { e.amount = v; e.source = 'manual'; e.meta = ''; if (v !== '' && e.labelAuto && e.label) e.labelAuto = false; }, update);
-      const rm = $('.row-remove', row);
-      if (rm) rm.addEventListener('click', () => removeYearRow(i));
       renderRowMeta(i);
 
       const toggle = $('.build-toggle', row);
@@ -212,8 +275,11 @@
     if (e.source === 'stub') h += '<span class="tag tag-stub">Pay stub</span><span>' + esc(e.meta || '') + '</span>';
     else if (e.source === 'projected') h += '<span class="tag tag-proj">Projected</span><span>' + esc(e.meta || '') + '</span>';
     if (has && !isCounted) h += '<span class="tag tag-out">Not in your top 5</span>';
+    if (state.earnings.length > 5) h += '<button class="chip row-remove" type="button" aria-label="Remove this year">Remove</button>';
     el.hidden = !h;
     el.innerHTML = h;
+    const rm = $('.row-remove', el);
+    if (rm) rm.addEventListener('click', () => removeYearRow(i));
   }
 
   // ----- from pay stub -----
@@ -819,12 +885,15 @@
       if (!t) return;
       if (t.dataset.tab) showTab(t.dataset.tab);
       else if (t.dataset.tabGo) showTab(t.dataset.tabGo);
+      else if (t.dataset.action === 'help') showIntro();
+      else if (t.dataset.action === 'intro-close') hideIntro();
       else if (t.dataset.action === 'export') exportPdf();
       else if (t.dataset.action === 'compare-current') addScenario();
       else if (t.dataset.action === 'add-scenario') addScenario();
       else if (t.dataset.action === 'restore-defaults') restoreDefaults();
       else if (t.dataset.action === 'reset') resetAll();
     });
+    document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#intro').hidden) hideIntro(); });
     // light haptic tap on supported phones
     document.addEventListener('pointerdown', ev => {
       if (ev.pointerType === 'touch' && ev.target.closest('button') && navigator.vibrate) { try { navigator.vibrate(8); } catch (e) { /* ignore */ } }
@@ -841,6 +910,8 @@
     update();
     showTab(state.tab, { keepScroll: true });
     if (!booted) { bindGlobal(); booted = true; }
+    if (!state.introSeen) showIntro();
+    applyDemoScene();
   }
 
   init();
